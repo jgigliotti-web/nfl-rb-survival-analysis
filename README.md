@@ -7,7 +7,7 @@ The primary goal of this project is to move beyond traditional age-based scoutin
 Running Backs are the most rapidly depreciating assets in professional sports. NFL front offices frequently fall into the "sunk trap cost", signing veteran workhorses to second contracts based on past production rather than future durability. Without a mathematical "cutoff" for workload, teams consistently overpay for players on the verge of a statistical cliff, leading to significant salary cap inefficiencies and roster stagnation.
 
 ### Methodology
-This project applies Acturarial mortality modeling—the same math used by insurance companies to price life insurance—to NFL workload data.
+This project applies Acturarial mortality modeling—the same math used by insurance companies to price life insurance to NFL workload data.
 
 * Data Source: Two decades of NFL play-by-play and seasonal data (via `nflfastR`).
 * Time vs. Event: Cumulative career touches (carries + receptions) were used as the measure of "time," while a "failure event" was defined as a 20% drop in efficiency or a season-ending injury.
