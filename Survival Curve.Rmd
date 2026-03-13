@@ -1,0 +1,262 @@
+---
+title: "Survival Curve"
+output:
+  pdf_document: default
+  html_document: default
+date: "2025-11-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Summary
+
+This project applies actuarial mortality modeling to NFL roster management. By treating a Running Back’s on-field efficiency as a "life" and cumulative career touches as "time," I built a predictive framework to identify exactly when a player transitions from a high-value asset to a high-risk liability. The study utilizes two decades of NFL data to move beyond age-based scouting and into workload basedrisk assessment.
+
+### Problem
+
+Running Backs are the most rapidly depreciating assets in professional sports. NFL front offices frequently fall into the "Sunk Cost" trap, signing veteran workhorse backs to lucrative second contracts based on past performance rather than future durability. Without a rigid, mathematical threshold for "Expected Useful Life," teams consistently overpay for players who are on the verge of a statistical collapse, leading to significant salary cap inefficiencies.
+
+### Findings
+
+-   **The Touch Threshold:** The actuarial median survival point for NFL running backs is 576 cumulative career touches. At this specific mark, 50% of the population "dies".
+
+-   **Exponential Decay:** Using Nelson-Aalen Hazard estimation, the data proves that risk is not linear. The "Burn Rate" follows a J-curve, where the probability of a performance collapse increases exponentially once a player crosses the 500-touch mark.
+
+-   **The 95% Danger Zone:** Statistical confidence intervals identify the window of 533 to 642 touches as the primary "Cliff Zone." Very few "Elite Outliers" maintain production beyond 700 touches, making anyone in this bracket a high-risk financial anchor.
+
+### Conclusion
+
+To maximize roster ROI and Salary Cap health, the front office must adopt a "Maximum Mileage" policy.
+
+1.  **Hard Deadlines:** RBs should rarely be offered guaranteed extensions once they exceed 500 career touches, as they are mathematically entering the highest hazard phase of their career.
+
+2.  **Asset Rotation:** The most efficient backfields are those that prioritize "Fresh Legs" (0–350 touches), where the hazard rate is lowest and efficiency is highest.
+
+3.  **Outlier Profiling:** By identifying the physical traits of players who beat the 576-touch median, the team can refine its draft board to prioritize "Structural Durability" over raw speed.
+
+```{r}
+# 
+# PROJECT:SURVIVAL CURVE
+#
+library(tidyverse)
+library(nflreadr)
+library(survival)
+library(survminer)
+
+print("1. Downloading Data...")
+weekly_stats <- load_player_stats(seasons = 2005:2023)
+
+print("2. Aggregating RB Seasons & Calculating EPA...")
+rb_seasons <- weekly_stats %>%
+  filter(position == "RB" | position_group == "RB") %>%
+  group_by(player_id, season) %>%
+  summarize(
+    player_name = first(player_display_name),
+    touches = sum(carries + receptions, na.rm = TRUE),
+    total_epa = sum(rushing_epa + receiving_epa, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  # Filter out practice squad guys with a 50-touch minimum per season
+  filter(touches >= 50) 
+
+print("3. Calculating Cumulative Career Workload...")
+workload_data <- rb_seasons %>%
+  arrange(player_id, season) %>%
+  group_by(player_id, player_name) %>%
+  mutate(
+    epa_per_touch = total_epa / touches,
+    cumulative_touches = cumsum(touches),
+    # The "Cliff" Event: Accumulating at least 300 career touches and dropping below -0.05 EPA/touch
+    is_cliff = ifelse(cumulative_touches >= 300 & epa_per_touch < -0.05, 1, 0)
+  ) %>%
+  ungroup()
+
+print("4. Structuring the Actuarial Survival Data...")
+player_status <- workload_data %>%
+  group_by(player_id, player_name) %>%
+  summarize(
+    # Status: 1 if they hit the cliff, 0 if they are still efficient/active (censored)
+    event_status = max(is_cliff),
+    # Time: The exact touch count when they hit the cliff, OR their max touches if they never did
+    event_touches = ifelse(
+      max(is_cliff) == 1, 
+      min(cumulative_touches[is_cliff == 1]), 
+      max(cumulative_touches)
+    ),
+    .groups = "drop"
+  )
+
+print(paste("Total Running Backs Analyzed:", nrow(player_status)))
+
+print("5. Fitting the Kaplan-Meier Survival Curve...")
+# The Surv() function creates the actuarial object using Time (event_touches) and Status (event_status)
+km_fit <- survfit(Surv(event_touches, event_status) ~ 1, data = player_status)
+
+# Print the median survival touch count!
+print(km_fit)
+
+print("6. Plotting the Survival Curve...")
+# This will generate a beautiful actuarial chart
+p <- ggsurvplot(
+  km_fit,
+  data = player_status,
+  conf.int = TRUE,
+  palette = "#2E9FDF",
+  xlab = "Cumulative Career Touches",
+  ylab = "Probability of Sustaining Efficiency",
+  title = "Actuarial Aging Curve: The Running Back Cliff",
+  subtitle = "Tracking efficiency drop-off based on cumulative workload",
+  ggtheme = theme_minimal(),
+  legend = "none"
+)
+
+print(p)
+```
+
+```{r}
+# 
+# PROJECT: THE CUMULATIVE RISK 
+# 
+library(tidyverse)
+library(survival)
+library(survminer)
+
+# 1. Calculate the Cumulative Hazard
+# This measures the 'Total Risk' a RB has absorbed at every touch
+km_fit_haz <- survfit(Surv(event_touches, event_status) ~ 1, data = player_status)
+
+# 2. Plot the Cumulative Hazard (The 'Risk Accumulation' Chart)
+p_haz <- ggsurvplot(
+  km_fit_haz,
+  data = player_status,
+  fun = "cumhaz",        # This is the magic toggle for 'Cumulative Hazard'
+  conf.int = TRUE,
+  palette = "#E74C3C",   # Red for Danger
+  xlab = "Cumulative Career Touches",
+  ylab = "Cumulative Hazard (Risk of Failure)",
+  title = "The RB Burn Rate: Cumulative Risk of Efficiency Collapse",
+  subtitle = "Nelson-Aalen Estimate of Workload-Based Risk",
+  ggtheme = theme_minimal()
+)
+
+print(p_haz)
+```
+
+```{r}
+# 
+# PROJECT:RB RISK 
+# 
+library(tidyverse)
+library(nflreadr)
+
+# 1. Grab all RB stats since 2018 to get career totals for active players
+active_stats <- load_player_stats(seasons = 2018:2024) %>%
+  filter(position == "RB") %>%
+  group_by(player_id, player_display_name) %>%
+  summarize(
+    career_touches = sum(carries + receptions, na.rm = TRUE),
+    current_epa_per_touch = sum(rushing_epa + receiving_epa, na.rm = TRUE) / career_touches,
+    last_season = max(season),
+    .groups = "drop"
+  ) %>%
+  # Filter for players who played in 2023 or 2024
+  filter(last_season >= 2023)
+
+# 2. Apply the Actuarial Thresholds (Median = 576)
+risk_dashboard <- active_stats %>%
+  mutate(
+    life_exhausted_pct = round((career_touches / 576) * 100, 1),
+    risk_status = case_when(
+      career_touches < 300 ~ "GREEN: Fresh Legs",
+      career_touches >= 300 & career_touches < 576 ~ "YELLOW: Approaching Cliff",
+      career_touches >= 576 & current_epa_per_touch >= 0 ~ "PURPLE: Elite Outlier",
+      career_touches >= 576 & current_epa_per_touch < 0 ~ "RED: High Liability",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  arrange(desc(career_touches))
+
+# 3. View the Top 20 Most 'At-Risk' Active RBs
+print("--- TOP 20 RBs BY WORKLOAD RISK ---")
+print(head(risk_dashboard %>% select(player_display_name, career_touches, life_exhausted_pct, risk_status), 20))
+
+# 4. Visualize the League-Wide Risk
+ggplot(risk_dashboard, aes(x = career_touches, y = current_epa_per_touch, color = risk_status)) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  geom_vline(xintercept = 576, color = "darkred", linetype = "dotted", size = 1) +
+  geom_point(size = 3, alpha = 0.7) +
+  scale_color_manual(values = c("GREEN: Fresh Legs" = "#2ecc71", 
+                                "YELLOW: Approaching Cliff" = "#f1c40f", 
+                                "PURPLE: Elite Outlier" = "#9b59b6", 
+                                "RED: High Liability" = "#e74c3c")) +
+  labs(
+    title = "NFL Running Back Risk Profile (Active Players)",
+    subtitle = "Vertical Line = 576 Touch Actuarial Median",
+    x = "Career Touches",
+    y = "Career EPA per Touch",
+    color = "Actuarial Status"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# 
+# PROJECT:INJURY-ADJUSTED SURVIVAL MODEL
+# 
+library(tidyverse)
+library(nflreadr)
+
+print("1. Engineering Injury Proxy...")
+# We use load_player_stats but we need 'games' played
+injury_data <- load_player_stats(seasons = 2012:2024) %>%
+  filter(position == "RB") %>%
+  group_by(player_id, season) %>%
+  summarize(
+    player_name = first(player_display_name),
+    games_played = n_distinct(week), # Count unique weeks they played
+    season_touches = sum(carries + receptions, na.rm = TRUE),
+    # Proxy: If they played < 9 games but were a 'starter' (>10 touches/game pace)
+    # this statistically flags a significant mid-season injury.
+    is_injured = ifelse(games_played < 9 & season_touches > 80, 1, 0),
+    .groups = "drop"
+  )
+
+print("2. Mapping Injuries to Cumulative Career...")
+injury_survival <- injury_data %>%
+  arrange(player_id, season) %>%
+  group_by(player_id) %>%
+  mutate(
+    cumulative_touches = cumsum(season_touches),
+    career_injury_count = cumsum(is_injured)
+  ) %>%
+  # Find the FIRST time they suffered a major 'Injury Season'
+  summarize(
+    first_injury_touch_count = min(cumulative_touches[is_injured == 1], na.rm = TRUE),
+    max_career_touches = max(cumulative_touches),
+    had_major_injury = max(is_injured),
+    .groups = "drop"
+  ) %>%
+  # Clean up Infinite values for players who never got injured
+  mutate(
+    event_touches = ifelse(had_major_injury == 1, first_injury_touch_count, max_career_touches)
+  )
+
+print("3. Comparing Injury Survival vs. Efficiency Survival...")
+# Now we run the same Kaplan-Meier math but for 'Injury' as the death event
+injury_fit <- survfit(Surv(event_touches, had_major_injury) ~ 1, data = injury_survival)
+
+print(injury_fit)
+
+# 4. Plotting the 'Medical Cliff'
+ggsurvplot(
+  injury_fit,
+  data = injury_survival,
+  color = "#E67E22", # Orange for Medical/Injury
+  title = "The Medical Cliff: Risk of Season-Ending Injury",
+  subtitle = "Probability of surviving without a major (>8 game) injury absence",
+  xlab = "Cumulative Career Touches",
+  ylab = "Probability of Remaining Healthy"
+)
+```
